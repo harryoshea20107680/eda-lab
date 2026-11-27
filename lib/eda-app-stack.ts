@@ -33,8 +33,16 @@ export class EDAAppStack extends cdk.Stack {
 
     // Integration infrastructure
 
-    const imageProcessQueue = new sqs.Queue(this, "img-process-q", {
+
+    const dlq = new sqs.Queue(this, "img-dlq", {
       receiveMessageWaitTime: cdk.Duration.seconds(6),
+    });
+
+    const imageProcessQueue = new sqs.Queue(this, "img-process-q", {
+     receiveMessageWaitTime: cdk.Duration.seconds(6),
+     deadLetterQueue: {
+        queue: dlq,
+        maxReceiveCount: 1,},
     });
 
     const mailerQ = new sqs.Queue(this, "mailer-q", {
@@ -70,6 +78,19 @@ export class EDAAppStack extends cdk.Stack {
      entry: `${__dirname}/../lambdas/mailer.ts`,
     });
 
+
+    const rejectedFileFn = new lambdanode.NodejsFunction(
+      this,
+      "RejectedFileFn",
+      {
+       runtime: lambda.Runtime.NODEJS_22_X,
+       entry: `${__dirname}/../lambdas/rejectedFile.ts`,
+       timeout: cdk.Duration.seconds(15),
+       memorySize: 128,
+      }
+    );
+
+
     // S3 --> SQS
     imagesBucket.addEventNotification(
       s3.EventType.OBJECT_CREATED,
@@ -98,6 +119,14 @@ export class EDAAppStack extends cdk.Stack {
     });
 
     mailerFn.addEventSource(newImageMailEventSource);
+
+    const rejectedFileEventSource = new events.SqsEventSource(dlq, {
+      batchSize: 5,
+      maxBatchingWindow: cdk.Duration.seconds(10),
+    });
+
+    rejectedFileFn.addEventSource(rejectedFileEventSource);
+
 
     // Permissions
 

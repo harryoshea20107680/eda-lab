@@ -20,22 +20,39 @@ export const handler: SQSHandler = async (event) => {
       for (const s3Message of snsMessage.Records) {
         const s3e = s3Message.s3;
 
+        // Decode the uploaded file name.
         const srcKey = decodeURIComponent(
           s3e.object.key.replace(/\+/g, " ")
         );
 
-        try {
-          await ddbDocClient.send(
-            new PutCommand({
-              TableName: process.env.TABLE_NAME,
-              Item: {
-                name: srcKey,
-              },
-            })
-          );
-        } catch (error) {
-          console.log(error);
+        // Infer the image type from its extension.
+        const typeMatch = srcKey.match(/\.([^.]*)$/);
+
+        if (!typeMatch) {
+          console.log("Could not determine the image type.");
+          throw new Error("Could not determine the image type.");
         }
+
+        // Allow only JPEG and PNG images.
+        const imageType = typeMatch[1].toLowerCase();
+
+        if (
+          imageType !== "jpeg" &&
+          imageType !== "jpg" &&
+          imageType !== "png"
+        ) {
+          throw new Error(`Unsupported image type: ${imageType}`);
+        }
+
+        // Store valid images in DynamoDB.
+        await ddbDocClient.send(
+          new PutCommand({
+            TableName: process.env.TABLE_NAME,
+            Item: {
+              name: srcKey,
+            },
+          })
+        );
       }
     }
   }
