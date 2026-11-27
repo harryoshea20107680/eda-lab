@@ -106,9 +106,11 @@ export class EDAAppStack extends cdk.Stack {
     );
 
     // SQS --> Lambda
+    
     const newImageEventSource = new events.SqsEventSource(imageProcessQueue, {
       batchSize: 5,
       maxBatchingWindow: cdk.Duration.seconds(5),
+      reportBatchItemFailures: true,
     });
 
     persistImageDataFn.addEventSource(newImageEventSource);

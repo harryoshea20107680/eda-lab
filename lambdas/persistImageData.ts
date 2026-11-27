@@ -1,4 +1,4 @@
-import { SQSHandler } from "aws-lambda";
+import { SQSBatchItemFailure, SQSHandler } from "aws-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
@@ -10,52 +10,69 @@ const ddbDocClient = createDDbDocClient();
 export const handler: SQSHandler = async (event) => {
   console.log("Event ", JSON.stringify(event));
 
+  // Record the IDs of failed SQS messages.
+  const batchItemFailures: SQSBatchItemFailure[] = [];
+
   for (const record of event.Records) {
-    const recordBody = JSON.parse(record.body);
-    const snsMessage = JSON.parse(recordBody.Message);
+    try {
+      // Parse SQS message.
+      const recordBody = JSON.parse(record.body);
 
-    console.log("Record body ", JSON.stringify(snsMessage));
+      // Parse SNS message.
+      const snsMessage = JSON.parse(recordBody.Message);
 
-    if (snsMessage.Records) {
-      for (const s3Message of snsMessage.Records) {
-        const s3e = s3Message.s3;
+      console.log("Record body ", JSON.stringify(snsMessage));
 
-        // Decode the uploaded file name.
-        const srcKey = decodeURIComponent(
-          s3e.object.key.replace(/\+/g, " ")
-        );
+      if (snsMessage.Records) {
+        for (const s3Message of snsMessage.Records) {
+          const s3e = s3Message.s3;
 
-        // Infer the image type from its extension.
-        const typeMatch = srcKey.match(/\.([^.]*)$/);
+          // Decode the image filename.
+          const srcKey = decodeURIComponent(
+            s3e.object.key.replace(/\+/g, " ")
+          );
 
-        if (!typeMatch) {
-          console.log("Could not determine the image type.");
-          throw new Error("Could not determine the image type.");
+          // Determine file extension.
+          const typeMatch = srcKey.match(/\.([^.]*)$/);
+
+          if (!typeMatch) {
+            throw new Error("Could not determine the image type.");
+          }
+
+          // Check supported image types.
+          const imageType = typeMatch[1].toLowerCase();
+
+          if (
+            imageType !== "jpeg" &&
+            imageType !== "jpg" &&
+            imageType !== "png"
+          ) {
+            throw new Error(`Unsupported image type: ${imageType}`);
+          }
+
+          // Save valid images to DynamoDB.
+          await ddbDocClient.send(
+            new PutCommand({
+              TableName: process.env.TABLE_NAME,
+              Item: {
+                name: srcKey,
+              },
+            })
+          );
         }
-
-        // Allow only JPEG and PNG images.
-        const imageType = typeMatch[1].toLowerCase();
-
-        if (
-          imageType !== "jpeg" &&
-          imageType !== "jpg" &&
-          imageType !== "png"
-        ) {
-          throw new Error(`Unsupported image type: ${imageType}`);
-        }
-
-        // Store valid images in DynamoDB.
-        await ddbDocClient.send(
-          new PutCommand({
-            TableName: process.env.TABLE_NAME,
-            Item: {
-              name: srcKey,
-            },
-          })
-        );
       }
+    } catch (error) {
+      // Only mark this SQS message as failed.
+      console.log(`Message ${record.messageId} failed: `, error);
+
+      batchItemFailures.push({
+        itemIdentifier: record.messageId,
+      });
     }
   }
+
+  // Return failed message identifiers to Lambda.
+  return { batchItemFailures };
 };
 
 function createDDbDocClient() {
