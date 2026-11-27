@@ -91,19 +91,78 @@ export class EDAAppStack extends cdk.Stack {
     );
 
 
+    const addMetadataFn = new lambdanode.NodejsFunction(
+      this,
+     "addMetadataFn",
+     {
+        runtime: lambda.Runtime.NODEJS_22_X,
+        entry: `${__dirname}/../lambdas/addImageMetadata.ts`,
+        timeout: cdk.Duration.seconds(15),
+        memorySize: 128,
+        environment: {
+         TABLE_NAME: imagesTable.tableName,
+       },
+      }
+    );
+
+
+
     // S3 --> SQS
     imagesBucket.addEventNotification(
       s3.EventType.OBJECT_CREATED,
       new s3n.SnsDestination(newImageTopic)
     );
 
+    
     newImageTopic.addSubscription(
-      new subs.SqsSubscription(imageProcessQueue)
-    );
+      new subs.SqsSubscription(imageProcessQueue, {
+        filterPolicyWithMessageBody: {
+          Records: sns.FilterOrPolicy.policy({
+            s3: sns.FilterOrPolicy.policy({
+              object: sns.FilterOrPolicy.policy({
+                key: sns.FilterOrPolicy.filter(
+                  sns.SubscriptionFilter.stringFilter({
+                    matchSuffixes: [".jpeg", ".jpg", ".png"],
+                  })
+                ),
+              }),
+            }),
+          }),
+        },
+      })
+  );
+
 
     newImageTopic.addSubscription(
-      new subs.SqsSubscription(mailerQ)
+      new subs.SqsSubscription(mailerQ, {
+        filterPolicyWithMessageBody: {
+          Records: sns.FilterOrPolicy.policy({
+            s3: sns.FilterOrPolicy.policy({
+              object: sns.FilterOrPolicy.policy({
+                key: sns.FilterOrPolicy.filter(
+                  sns.SubscriptionFilter.stringFilter({
+                    matchSuffixes: [".jpeg", ".jpg", ".png"],
+                  })
+                ),
+              }),
+           }),
+          }),
+       },
+     })
     );
+
+
+
+    newImageTopic.addSubscription(
+      new subs.LambdaSubscription(addMetadataFn, {
+        filterPolicy: {
+          metadata_type: sns.SubscriptionFilter.stringFilter({
+            allowlist: ["Caption", "Date", "Photographer"],
+          }),
+        },
+      })
+    );
+
 
     // SQS --> Lambda
     
@@ -134,6 +193,8 @@ export class EDAAppStack extends cdk.Stack {
 
     imagesTable.grantReadWriteData(persistImageDataFn);
 
+    imagesTable.grantReadWriteData(addMetadataFn);
+
     imagesBucket.grantRead(persistImageDataFn);
 
     mailerFn.addToRolePolicy(
@@ -152,6 +213,10 @@ export class EDAAppStack extends cdk.Stack {
     
     new cdk.CfnOutput(this, "bucketName", {
       value: imagesBucket.bucketName,
+    });
+
+    new cdk.CfnOutput(this, "SNS Topic ARN", {
+      value: newImageTopic.topicArn,
     });
 
   }
